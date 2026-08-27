@@ -1,0 +1,18 @@
+[Unit]
+Description=J-Box message display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jbox/pi
+ExecStart=/usr/bin/python3 -m jbox
+Restart=always
+RestartSec=5
+# Let SDL render straight to the display without X (KMS/DRM), touch via evdev
+Environment=SDL_VIDEODRIVER=kmsdrm
+SupplementaryGroups=video input render gpio
+
+[Install]
+WantedBy=multi-user.target

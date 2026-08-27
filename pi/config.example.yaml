@@ -1,0 +1,37 @@
+# J-Box configuration.
+# Copy to config.yaml (same directory) and fill in the real values.
+# config.yaml holds the device token — never commit it.
+
+api:
+  # Where the task-manager app is deployed
+  base_url: "https://your-task-manager.vercel.app"
+  # Must match JBOX_DEVICE_TOKEN in the task-manager environment.
+  # Generate one with: openssl rand -hex 32
+  device_token: "CHANGE-ME"
+  poll_seconds: 60
+
+display:
+  width: 800
+  height: 480
+  fullscreen: true
+  # Seconds per character during the typewriter reveal
+  typewriter_delay: 0.045
+
+gpio:
+  # BCM numbering. Avoid 7,8,9,10,11,25 — the XPT2046 touch controller uses them.
+  led_pin: 18          # physical pin 12 (PWM-capable)
+  reed_pin: 17         # physical pin 11; other leg of the reed switch goes to GND
+  # With the magnet on the lid and the switch on the box body, the switch is
+  # CLOSED (pin pulled to GND) while the lid is closed. If your switch behaves
+  # the other way around, flip this.
+  lid_closed_when_circuit_closed: true
+
+dates:
+  # Fill in before gifting. Leave anniversary empty to hide the day counter.
+  anniversary: ""              # e.g. "2018-06-14"
+  occasions:
+    # Recur every year. label is what the banner shows.
+    # - date: "06-14"
+    #   label: "Happy Anniversary ♥"
+    # - date: "03-02"
+    #   label: "Happy Birthday, Julia!"

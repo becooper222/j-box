@@ -1,0 +1,8 @@
+# hold the device token - never commit
+.env
+pi/config.yaml
+pi/messages.cache.json
+__pycache__/
+*.pyc
+*.stl
+.DS_Store
