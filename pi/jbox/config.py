@@ -27,6 +27,7 @@ class Config:
     width: int = 800
     height: int = 480
     fullscreen: bool = True
+    rotate: int = 90  # applied when the panel's native mode is portrait
     typewriter_delay: float = 0.045
     led_pin: int = 18
     reed_pin: int = 17
@@ -78,6 +79,7 @@ def load(path: str | Path) -> Config:
         width=int(disp.get("width", 800)),
         height=int(disp.get("height", 480)),
         fullscreen=bool(disp.get("fullscreen", True)),
+        rotate=int(disp.get("rotate", 90)),
         typewriter_delay=float(disp.get("typewriter_delay", 0.045)),
         led_pin=int(gpio.get("led_pin", 18)),
         reed_pin=int(gpio.get("reed_pin", 17)),

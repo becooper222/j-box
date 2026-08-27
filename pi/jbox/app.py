@@ -52,8 +52,19 @@ class JBoxApp:
         )
 
         pygame.init()
-        flags = pygame.FULLSCREEN if cfg.fullscreen else 0
-        self.surface = pygame.display.set_mode((cfg.width, cfg.height), flags)
+        if cfg.fullscreen:
+            # Take the panel's native mode; the Waveshare 4" reports
+            # portrait 480x800, so we draw landscape and rotate at blit.
+            self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.display = pygame.display.set_mode((cfg.width, cfg.height))
+        dw, dh = self.display.get_size()
+        if (dw, dh) == (cfg.width, cfg.height):
+            self.rotate = 0
+        else:
+            self.rotate = cfg.rotate  # 90 = panel is portrait-native
+        # all drawing targets this landscape canvas
+        self.surface = pygame.Surface((cfg.width, cfg.height))
         pygame.display.set_caption("J-Box")
         pygame.mouse.set_visible(False)
 
@@ -264,6 +275,18 @@ class JBoxApp:
 
     # ------------------------------------------------------------- input
 
+    def _to_canvas(self, pos: tuple[int, int]) -> tuple[int, int]:
+        """Map a display-space tap back onto the landscape canvas."""
+        dx, dy = pos
+        w, h = self.cfg.width, self.cfg.height
+        if self.rotate == 90:      # canvas rotated CCW onto the panel
+            return w - 1 - dy, dx
+        if self.rotate == -90:     # clockwise
+            return dy, h - 1 - dx
+        if self.rotate == 180:
+            return w - 1 - dx, h - 1 - dy
+        return dx, dy
+
     def _tap(self, pos: tuple[int, int]) -> None:
         if self.state == "REVEAL":
             # tapping skips to the end of the typewriter
@@ -312,7 +335,11 @@ class JBoxApp:
                     elif ev.key == pygame.K_c:
                         self.events.put("lid_close")
                 elif ev.type == pygame.MOUSEBUTTONDOWN:
-                    self._tap(ev.pos)
+                    self._tap(self._to_canvas(ev.pos))
+                elif ev.type == pygame.FINGERDOWN:
+                    # kmsdrm delivers touch as normalized finger events
+                    dw, dh = self.display.get_size()
+                    self._tap(self._to_canvas((int(ev.x * dw), int(ev.y * dh))))
 
             try:
                 while True:
@@ -336,6 +363,10 @@ class JBoxApp:
             elif self.state == "ARCHIVE":
                 self._draw_archive()
 
+            if self.rotate:
+                self.display.blit(pygame.transform.rotate(self.surface, self.rotate), (0, 0))
+            else:
+                self.display.blit(self.surface, (0, 0))
             pygame.display.flip()
             clock.tick(FPS)
 

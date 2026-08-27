@@ -4,7 +4,10 @@ set -euo pipefail
 
 echo "==> Installing packages"
 sudo apt-get update
-sudo apt-get install -y python3-pygame python3-gpiozero python3-requests python3-yaml
+# libegl1/libgles2/libgl1-mesa-dri: SDL's kmsdrm driver needs them and
+# Raspberry Pi OS Lite doesn't ship them
+sudo apt-get install -y python3-pygame python3-gpiozero python3-requests python3-yaml \
+  libegl1 libgles2 libgl1-mesa-dri libgbm1
 
 if [ ! -f config.yaml ]; then
   cp config.example.yaml config.yaml
