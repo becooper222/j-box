@@ -288,6 +288,11 @@ class JBoxApp:
         return dx, dy
 
     def _tap(self, pos: tuple[int, int]) -> None:
+        if self.state == "IDLE":
+            # tap-to-wake: harmless in normal use (lid closed = screen
+            # unreachable) and lets the box work even if the reed fails
+            self._open_lid()
+            return
         if self.state == "REVEAL":
             # tapping skips to the end of the typewriter
             self.reveal_started = -1e9
