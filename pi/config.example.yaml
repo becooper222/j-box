@@ -16,7 +16,7 @@ display:
   driver: fb
   # -90 puts the landscape UI upright with the connectors at the
   # bottom on this portrait 480x800 panel; use 90 to flip top-for-bottom
-  rotate: -90
+  rotate: 90
   # flip these if taps land in the wrong spot
   touch_swap_xy: false
   touch_invert_x: false
@@ -28,9 +28,10 @@ display:
   typewriter_delay: 0.045
 
 gpio:
-  # BCM numbering. Avoid 7,8,9,10,11,25 — the XPT2046 touch controller uses them.
-  led_pin: 18          # physical pin 12 (PWM-capable)
-  reed_pin: 17         # physical pin 11; other leg of the reed switch goes to GND
+  # BCM numbering. The LCD covers physical pins 1-26: it uses 7,9,10,11 (touch
+  # SPI), 25 (pen IRQ) and 18 (backlight), so our parts live on pins 27-40.
+  led_pin: 12          # physical pin 32 (PWM; GPIO18 is the LCD backlight)
+  reed_pin: 26         # physical pin 37; other leg of the reed switch goes to GND
   # With the magnet on the lid and the switch on the box body, the switch is
   # CLOSED (pin pulled to GND) while the lid is closed. If your switch behaves
   # the other way around, flip this.
