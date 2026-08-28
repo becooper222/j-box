@@ -81,15 +81,18 @@ class Lid:
 
 
 class ScreenPower:
-    """Best-effort display blanking.
+    """Display blanking.
 
-    Inside a closed box a black frame is effectively "off"; when available we
-    additionally cut the HDMI signal. The app always renders black while
-    idle, so failures here are harmless.
+    Inside a closed box a black frame is already "off", so by default we
+    only render black and leave the HDMI signal up: this panel does not
+    reliably resync after `display_power 0`, which strands it backlit but
+    blank. Set display.blank_hdmi in config.yaml to opt back in.
     """
 
-    def __init__(self):
+    def __init__(self, blank_hdmi: bool = False):
+        self._blank_hdmi = blank_hdmi
         self._is_on = True
+        self._vcgencmd("1")  # recover a panel left dark by an earlier run
 
     def on(self) -> None:
         if not self._is_on:
@@ -97,7 +100,7 @@ class ScreenPower:
             self._is_on = True
 
     def off(self) -> None:
-        if self._is_on:
+        if self._is_on and self._blank_hdmi:
             self._vcgencmd("0")
             self._is_on = False
 

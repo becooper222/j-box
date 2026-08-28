@@ -11,6 +11,13 @@ api:
   poll_seconds: 60
 
 display:
+  # "fb" draws straight to /dev/fb0 (use for the Waveshare 4" HDMI LCD,
+  # where SDL's kmsdrm output never reaches the panel); "kmsdrm" is normal SDL
+  driver: fb
+  # flip these if taps land in the wrong spot
+  touch_swap_xy: false
+  touch_invert_x: false
+  touch_invert_y: false
   width: 800
   height: 480
   fullscreen: true
@@ -35,3 +42,8 @@ dates:
     #   label: "Happy Anniversary ♥"
     # - date: "03-02"
     #   label: "Happy Birthday, Julia!"
+
+dev:
+  # no reed switch wired yet: stay awake and auto-reveal new notes.
+  # set to false once the lid sensor is installed.
+  always_open: true

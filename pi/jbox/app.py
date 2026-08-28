@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -43,7 +44,7 @@ class JBoxApp:
         self.events: queue.Queue[str] = queue.Queue()
 
         self.led = Led(cfg.led_pin)
-        self.screen_power = ScreenPower()
+        self.screen_power = ScreenPower(blank_hdmi=cfg.blank_hdmi)
         self.lid = Lid(
             cfg.reed_pin,
             cfg.lid_closed_when_circuit_closed,
@@ -51,22 +52,39 @@ class JBoxApp:
             on_close=lambda: self.events.put("lid_close"),
         )
 
-        pygame.init()
-        if cfg.fullscreen:
-            # Take the panel's native mode; the Waveshare 4" reports
-            # portrait 480x800, so we draw landscape and rotate at blit.
-            self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        self.fb = None
+        self.touch = None
+        self.rotate = 0
+        if cfg.driver == "fb":
+            # draw offscreen, copy pixels straight to /dev/fb0, and take
+            # taps from evdev (SDL's kmsdrm path is a no-show on this panel)
+            from .fbdisplay import FbDisplay
+            from .touch import EvdevTouch
+            os.environ["SDL_VIDEODRIVER"] = "dummy"
+            pygame.init()
+            self.display = None
+            self.fb = FbDisplay()
+            self.surface = pygame.Surface((self.fb.width, self.fb.height))
+            self.cfg.width, self.cfg.height = self.fb.width, self.fb.height
+            self.touch = EvdevTouch(
+                self.fb.width, self.fb.height,
+                on_tap=lambda pos: self.events.put(("tap", pos)),
+                swap_xy=cfg.touch_swap_xy,
+                invert_x=cfg.touch_invert_x,
+                invert_y=cfg.touch_invert_y,
+            )
         else:
-            self.display = pygame.display.set_mode((cfg.width, cfg.height))
-        dw, dh = self.display.get_size()
-        if (dw, dh) == (cfg.width, cfg.height):
-            self.rotate = 0
-        else:
-            self.rotate = cfg.rotate  # 90 = panel is portrait-native
-        # all drawing targets this landscape canvas
-        self.surface = pygame.Surface((cfg.width, cfg.height))
-        pygame.display.set_caption("J-Box")
-        pygame.mouse.set_visible(False)
+            pygame.init()
+            if cfg.fullscreen:
+                self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            else:
+                self.display = pygame.display.set_mode((cfg.width, cfg.height))
+            dw, dh = self.display.get_size()
+            if (dw, dh) != (cfg.width, cfg.height):
+                self.rotate = cfg.rotate  # 90 = panel is portrait-native
+            self.surface = pygame.Surface((cfg.width, cfg.height))
+            pygame.display.set_caption("J-Box")
+            pygame.mouse.set_visible(False)
 
         self.font_body = pygame.font.SysFont("dejavusans", 38)
         self.font_head = pygame.font.SysFont("dejavusans", 24)
@@ -288,6 +306,7 @@ class JBoxApp:
         return dx, dy
 
     def _tap(self, pos: tuple[int, int]) -> None:
+        log.info("tap at %s (state=%s)", pos, self.state)
         if self.state == "IDLE":
             # tap-to-wake: harmless in normal use (lid closed = screen
             # unreachable) and lets the box work even if the reed fails
@@ -326,7 +345,12 @@ class JBoxApp:
 
     def run(self) -> None:
         clock = pygame.time.Clock()
-        self._enter_idle()
+        if self.cfg.always_open or os.environ.get("JBOX_START_OPEN"):
+            # no lid sensor wired yet: come up awake and stay awake
+            self.screen_power.on()
+            self._open_lid()
+        else:
+            self._enter_idle()
         running = True
         while running:
             for ev in pygame.event.get():
@@ -351,8 +375,10 @@ class JBoxApp:
                     hw = self.events.get_nowait()
                     if hw == "lid_open" and self.state == "IDLE":
                         self._open_lid()
-                    elif hw == "lid_close":
+                    elif hw == "lid_close" and not self.cfg.always_open:
                         self._enter_idle()
+                    elif isinstance(hw, tuple) and hw[0] == "tap":
+                        self._tap(hw[1])
             except queue.Empty:
                 pass
 
@@ -361,6 +387,10 @@ class JBoxApp:
                 if self.api.unread():
                     self.led.pulse()
                 self._draw_idle()
+            elif self.state == "READING" and self.cfg.always_open and self.api.unread():
+                # dev mode: nothing will ever re-open the lid, so reveal
+                # anything that arrives while we sit here
+                self._open_lid()
             elif self.state == "REVEAL":
                 self._draw_reveal()
             elif self.state == "READING":
@@ -368,11 +398,14 @@ class JBoxApp:
             elif self.state == "ARCHIVE":
                 self._draw_archive()
 
-            if self.rotate:
-                self.display.blit(pygame.transform.rotate(self.surface, self.rotate), (0, 0))
+            if self.fb:
+                self.fb.blit(self.surface)
             else:
-                self.display.blit(self.surface, (0, 0))
-            pygame.display.flip()
+                if self.rotate:
+                    self.display.blit(pygame.transform.rotate(self.surface, self.rotate), (0, 0))
+                else:
+                    self.display.blit(self.surface, (0, 0))
+                pygame.display.flip()
             clock.tick(FPS)
 
         self.led.off()
