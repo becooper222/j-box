@@ -43,6 +43,36 @@ class Led:
             log.info("[mock LED] off")
 
 
+class PushButton:
+    """Momentary button to GND, distinguishing a tap from a hold.
+
+    One button carries the whole interaction: a tap sends the heart, a hold
+    walks back through the archive.
+    """
+
+    def __init__(self, pin: int, hold_time: float, on_short, on_long):
+        self._on_short = on_short
+        self._on_long = on_long
+        self._held = False
+        if HAS_GPIO:
+            self._btn = Button(pin, pull_up=True, bounce_time=0.05, hold_time=hold_time)
+            self._btn.when_held = self._hold
+            self._btn.when_released = self._release
+        else:
+            self._btn = None
+            log.info("[mock button] press 'h' for heart, 'a' to browse the archive")
+
+    def _hold(self) -> None:
+        self._held = True
+        self._on_long()
+
+    def _release(self) -> None:
+        if self._held:
+            self._held = False  # already handled as a hold
+        else:
+            self._on_short()
+
+
 class Lid:
     """Reed-switch lid sensor.
 

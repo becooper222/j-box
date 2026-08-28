@@ -34,8 +34,10 @@ class Config:
     touch_invert_y: bool = False
     rotate: int = 90  # applied when the panel's native mode is portrait
     typewriter_delay: float = 0.045
-    led_pin: int = 18
-    reed_pin: int = 17
+    led_pin: int = 12
+    reed_pin: int = 26
+    button_pin: int = 16
+    button_hold_time: float = 0.8
     lid_closed_when_circuit_closed: bool = True
     always_open: bool = False  # dev: behave as if the lid is always open
     anniversary: date | None = None
@@ -94,8 +96,10 @@ def load(path: str | Path) -> Config:
         touch_invert_y=bool(disp.get("touch_invert_y", False)),
         rotate=int(disp.get("rotate", 90)),
         typewriter_delay=float(disp.get("typewriter_delay", 0.045)),
-        led_pin=int(gpio.get("led_pin", 18)),
-        reed_pin=int(gpio.get("reed_pin", 17)),
+        led_pin=int(gpio.get("led_pin", 12)),
+        reed_pin=int(gpio.get("reed_pin", 26)),
+        button_pin=int(gpio.get("button_pin", 16)),
+        button_hold_time=float(gpio.get("button_hold_time", 0.8)),
         lid_closed_when_circuit_closed=bool(gpio.get("lid_closed_when_circuit_closed", True)),
         anniversary=anniversary,
         occasions=occasions,

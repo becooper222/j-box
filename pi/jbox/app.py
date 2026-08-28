@@ -3,10 +3,12 @@
 States:
   IDLE     screen dark (box closed); LED pulses if a note is unread
   REVEAL   lid opened on an unread note -> typewriter reveal
-  READING  a note on screen with heart + archive controls
-  ARCHIVE  browsable list of every note ever sent
+  READING  a note on screen; the button hearts it
+  ARCHIVE  one older note at a time, walked back with the button
 
-Dev mode (no GPIO): 'o' opens the lid, 'c' closes it, Esc quits.
+Input is one momentary button: a tap sends the heart, a hold browses the
+archive. Before it is soldered, `kill -USR1 <pid>` fakes a tap and
+`-USR2` a hold. Dev mode (no GPIO): 'o'/'c' work the lid, Esc quits.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import logging
 import math
 import os
 import queue
+import signal
 import threading
 import time
 from datetime import date
@@ -22,7 +25,7 @@ import pygame
 
 from .api import JBoxAPI, Message
 from .config import Config
-from .hardware import Led, Lid, ScreenPower
+from .hardware import Led, Lid, PushButton, ScreenPower
 
 log = logging.getLogger("jbox.app")
 
@@ -35,7 +38,6 @@ DIM = (138, 122, 114)
 
 FPS = 30
 IDLE_FPS = 8  # nothing is animating; this box runs 24/7 on a Zero 2
-PER_PAGE = 4  # archive rows per page
 
 
 class JBoxApp:
@@ -51,6 +53,12 @@ class JBoxApp:
             cfg.lid_closed_when_circuit_closed,
             on_open=lambda: self.events.put("lid_open"),
             on_close=lambda: self.events.put("lid_close"),
+        )
+        self.button = PushButton(
+            cfg.button_pin,
+            cfg.button_hold_time,
+            on_short=lambda: self.events.put("btn_short"),
+            on_long=lambda: self.events.put("btn_long"),
         )
 
         self.fb = None
@@ -98,8 +106,12 @@ class JBoxApp:
         self.current: Message | None = None
         self.reveal_started = 0.0
         self.heart_anim_until = 0.0
-        self.archive_page = 0
+        self.archive_index = 0
         self.buttons: dict[str, pygame.Rect] = {}
+
+        # before the button is soldered: kill -USR1 <pid> = tap, -USR2 = hold
+        signal.signal(signal.SIGUSR1, lambda *_: self.events.put("btn_short"))
+        signal.signal(signal.SIGUSR2, lambda *_: self.events.put("btn_long"))
 
         threading.Thread(target=self._poll_loop, daemon=True).start()
 
@@ -245,12 +257,11 @@ class JBoxApp:
             )
             self.buttons["heart"] = rect
 
-        label = self.font_small.render("archive", True, DIM)
-        pos = (self.cfg.width // 2 - label.get_width() // 2, self.cfg.height - 40)
-        self.surface.blit(label, pos)
-        self.buttons["archive"] = pygame.Rect(pos[0] - 20, pos[1] - 12, label.get_width() + 40, 50)
+        hint = "press to send love  ·  hold to look back"
+        label = self.font_small.render(hint, True, DIM)
+        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2, self.cfg.height - 38))
 
-        # floating hearts after she taps the heart
+        # floating hearts after she presses the heart
         if time.monotonic() < self.heart_anim_until:
             t = self.heart_anim_until - time.monotonic()
             for i in range(6):
@@ -261,39 +272,29 @@ class JBoxApp:
                     self._draw_heart((hx, hy), 20 + (i % 3) * 8, ROSE)
 
     def _draw_archive(self) -> None:
+        """One older note at a time - a single button can't drive a list."""
         self.surface.fill(BG)
-        self.buttons.clear()
-        title = self.font_head.render("Every note", True, ROSE)
-        self.surface.blit(title, (self.cfg.width // 2 - title.get_width() // 2, 18))
-
         msgs = self.api.snapshot()
-        start = self.archive_page * PER_PAGE
-        y = 70
-        for idx, m in enumerate(msgs[start:start + PER_PAGE]):
-            row = pygame.Rect(30, y, self.cfg.width - 60, 78)
-            pygame.draw.rect(self.surface, (36, 20, 26), row, border_radius=12)
-            snippet = m.body.replace("\n", " ")
-            snippet = snippet[:44] + ("…" if len(snippet) > 44 else "")
-            self.surface.blit(self.font_small.render(m.created_date_text(), True, DIM), (48, y + 10))
-            self.surface.blit(self.font_small.render(snippet, True, CREAM), (48, y + 40))
-            if m.hearted_at:
-                self._draw_heart((row.right - 36, y + 39), 22, ROSE)
-            self.buttons[f"open:{m.id}"] = row
-            y += 90
+        if not msgs:
+            return
 
-        if start > 0:
-            up = self.font_head.render("▲", True, DIM)
-            self.surface.blit(up, (self.cfg.width - 60, 70))
-            self.buttons["prev"] = pygame.Rect(self.cfg.width - 90, 50, 80, 80)
-        if start + PER_PAGE < len(msgs):
-            down = self.font_head.render("▼", True, DIM)
-            self.surface.blit(down, (self.cfg.width - 60, self.cfg.height - 90))
-            self.buttons["next"] = pygame.Rect(self.cfg.width - 90, self.cfg.height - 110, 80, 80)
+        idx = self.archive_index % len(msgs)
+        m = msgs[idx]
+        head = self.font_head.render(f"{m.created_date_text()}   ({idx + 1} of {len(msgs)})", True, GOLD)
+        self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 18))
 
-        back = self.font_small.render("back", True, DIM)
-        pos = (self.cfg.width // 2 - back.get_width() // 2, self.cfg.height - 40)
-        self.surface.blit(back, pos)
-        self.buttons["back"] = pygame.Rect(pos[0] - 20, pos[1] - 12, back.get_width() + 40, 50)
+        lines = self._wrap(m.body, self.font_body, self.cfg.width - 90)
+        y = 80
+        for line in lines[:7]:
+            self.surface.blit(self.font_body.render(line, True, CREAM), (45, y))
+            y += self.font_body.get_linesize() + 4
+
+        if m.hearted_at:
+            self._draw_heart((self.cfg.width - 70, self.cfg.height - 60), 44, ROSE)
+
+        hint = "press for the one before  ·  hold to come back"
+        label = self.font_small.render(hint, True, DIM)
+        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2, self.cfg.height - 38))
 
     # ------------------------------------------------------------- input
 
@@ -308,6 +309,29 @@ class JBoxApp:
         if self.rotate == 180:
             return w - 1 - dx, h - 1 - dy
         return dx, dy
+
+    def _button_short(self) -> None:
+        log.info("button tap (state=%s)", self.state)
+        if self.state == "IDLE":
+            self._open_lid()
+        elif self.state == "REVEAL":
+            self.reveal_started = -1e9  # skip to the end of the typewriter
+        elif self.state == "READING":
+            if self.current and not self.current.hearted_at:
+                self.api.mark_hearted(self.current.id)
+            self.heart_anim_until = time.monotonic() + 1.5
+        elif self.state == "ARCHIVE":
+            self.archive_index += 1
+
+    def _button_long(self) -> None:
+        log.info("button hold (state=%s)", self.state)
+        if self.state == "ARCHIVE":
+            self.state = "READING"
+            msgs = self.api.snapshot()
+            self.current = msgs[0] if msgs else None
+        elif self.state in ("READING", "REVEAL"):
+            self.archive_index = 0
+            self.state = "ARCHIVE"
 
     def _tap(self, pos: tuple[int, int]) -> None:
         log.info("tap at %s (state=%s)", pos, self.state)
@@ -328,14 +352,12 @@ class JBoxApp:
                     self.api.mark_hearted(self.current.id)
                 self.heart_anim_until = time.monotonic() + 1.5
             elif name == "archive":
-                self.archive_page = 0
+                self.archive_index = 0
                 self.state = "ARCHIVE"
             elif name == "back":
                 self.state = "READING"
-            elif name == "prev":
-                self.archive_page -= 1
             elif name == "next":
-                self.archive_page += 1
+                self.archive_index += 1
             elif name.startswith("open:"):
                 msg_id = name.split(":", 1)[1]
                 for m in self.api.snapshot():
@@ -381,6 +403,10 @@ class JBoxApp:
                         self._open_lid()
                     elif hw == "lid_close" and not self.cfg.always_open:
                         self._enter_idle()
+                    elif hw == "btn_short":
+                        self._button_short()
+                    elif hw == "btn_long":
+                        self._button_long()
                     elif isinstance(hw, tuple) and hw[0] == "tap":
                         self._tap(hw[1])
             except queue.Empty:

@@ -31,6 +31,8 @@ gpio:
   # BCM numbering. The LCD covers physical pins 1-26: it uses 7,9,10,11 (touch
   # SPI), 25 (pen IRQ) and 18 (backlight), so our parts live on pins 27-40.
   led_pin: 12          # physical pin 32 (PWM; GPIO18 is the LCD backlight)
+  button_pin: 16       # physical pin 36; heart button, other leg to GND
+  button_hold_time: 0.8  # seconds held before it counts as a hold
   reed_pin: 26         # physical pin 37; other leg of the reed switch goes to GND
   # With the magnet on the lid and the switch on the box body, the switch is
   # CLOSED (pin pulled to GND) while the lid is closed. If your switch behaves
