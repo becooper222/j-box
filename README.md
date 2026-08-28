@@ -3,7 +3,8 @@
 A small wooden-jewelry-box-sized gift for Julia: a lidded box with a screen
 inside. You send her a note from your phone; a warm LED on the box starts
 breathing; she opens the lid and the note types itself out like a letter.
-She can tap a heart to send love back, and browse every note ever sent.
+She presses a heart button to send love back, and can walk back through
+every note ever sent.
 
 ## How it works
 
@@ -12,11 +13,11 @@ She can tap a heart to send love back, and browse every note ever sent.
 ┌────────────┐   POST   ┌────────────────┐    poll    ┌───────────────────┐
 │ /jbox page ├─────────►│ task-manager   │◄───────────┤ Pi Zero 2 W       │
 │ (Auth0)    │          │ on Vercel      │  every 60s │  · pygame app     │
-│            │◄─────────┤   │            ├───────────►│  · 4" HDMI touch  │
-│ "Julia ♥'d │  status  │   ▼            │  messages  │  · LED (GPIO18)   │
-│  this"     │          │ Supabase       │            │  · reed sw (GPIO17)│
-└────────────┘          │ jbox_messages  │            └───────────────────┘
-                        └────────────────┘
+│            │◄─────────┤   │            ├───────────►│  · 4" HDMI screen │
+│ "Julia ♥'d │  status  │   ▼            │  messages  │  · LED (GPIO12)   │
+│  this"     │          │ Supabase       │            │  · button (GPIO16)│
+│            │          │ jbox_messages  │            │  · reed sw (GPIO26)│
+└────────────┘          └────────────────┘            └───────────────────┘
 ```
 
 - **Send page**: `/jbox` route added to your existing task-manager app,
@@ -32,8 +33,9 @@ She can tap a heart to send love back, and browse every note ever sent.
 1. Box sits closed and dark. A note arrives → the LED starts a slow pulse.
 2. She opens the lid (reed switch) → screen wakes → the note reveals itself
    typewriter-style, headed "Day 2,913 of us" (or a gold occasion banner).
-3. She can tap the ♥ (you get "Julia ♥'d this" on your page) or browse the
-   archive of every note. Closing the lid puts everything back to sleep.
+3. She taps the heart button — you get "Julia ♥'d this" on your page — or
+   holds it to walk back through every note ever sent. Closing the lid puts
+   everything back to sleep.
 
 ## Repo layout
 
@@ -45,7 +47,7 @@ pi/                  everything that runs on the Pi
   install.sh
 case/jbox_case.scad  parametric 3D-printable enclosure (3 parts, no supports)
 docs/pi-setup.md     flash → config.txt → install → test
-docs/wiring.md       LED + reed switch soldering, pin map
+docs/wiring.md       LED + button + reed switch soldering, pin map
 ```
 
 Server-side pieces live in the task-manager repo:
@@ -59,6 +61,7 @@ Server-side pieces live in the task-manager repo:
 | 5 mm warm-white LED (a few spares) | diffused lens looks softest |
 | 220–330 Ω resistors | for the LED |
 | Normally-open reed switch + small disc magnet (~8×3 mm) | lid sensor |
+| Momentary pushbutton | the heart button; a chunky one feels best |
 | M2.5 screws/standoffs kit | mounts screen + Pi in the case |
 | Right-angle mini-HDMI adapter | if your current adapter is too tall for the case |
 | PETG or PLA filament | whoever prints it will likely supply this |
@@ -73,8 +76,8 @@ soldering iron, wires, USB power.
    `/jbox` and send a test note.
 2. **Pi on the bench** — follow `docs/pi-setup.md`; run the app with a
    keyboard first (`o`/`c` simulate the lid) before any soldering.
-3. **Solder** — LED + reed switch per `docs/wiring.md`; test the full flow
-   loose on the desk.
+3. **Solder** — LED, heart button and reed switch per `docs/wiring.md`;
+   test the full flow loose on the desk.
 4. **Case** — measure the screen with calipers, update the MEASURE values in
    `case/jbox_case.scad`, print the `test` part first to check the aperture,
    then all three parts. Assemble, glue magnet, thread the hinge pin.

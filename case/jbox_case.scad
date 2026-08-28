@@ -41,6 +41,8 @@ lid_h        = 12;        // inner depth of the lid dome
 hinge_r      = 4;
 hinge_pin_d  = 3.2;       // 3mm filament or nail as the hinge pin
 led_d        = 5.4;       // 5mm LED press fit in the front face
+button_d     = 12.2;      // MEASURE your button's threaded barrel
+button_gap   = 26;        // spacing between the LED and the button
 cable_w      = 12;        // USB power cable exit
 magnet_d     = 8.4;       // MEASURE your magnet (8x3 disc assumed)
 magnet_t     = 3.2;
@@ -57,9 +59,11 @@ module body() {
     linear_extrude(box_h) offset(3) offset(-3) square([box_w, box_d]);
     // cavity
     translate([wall, wall, floor_t]) cube([cavity_w, cavity_d, box_h]);
-    // LED hole, front face, centered
-    translate([box_w/2, wall+1, box_h - 8])
+    // LED and heart button on the front face, flanking the centre
+    translate([box_w/2 - button_gap/2, wall+1, box_h - 12])
       rotate([90,0,0]) cylinder(h=wall+2, d=led_d);
+    translate([box_w/2 + button_gap/2, wall+1, box_h - 12])
+      rotate([90,0,0]) cylinder(h=wall+2, d=button_d);
     // reed switch pocket: horizontal channel inside the front wall
     translate([box_w/2 - reed_l/2, wall - reed_d - 0.6, box_h - 6])
       cube([reed_l, reed_d, reed_d]);
