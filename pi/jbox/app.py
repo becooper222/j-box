@@ -34,6 +34,7 @@ GOLD = (217, 164, 65)
 DIM = (138, 122, 114)
 
 FPS = 30
+IDLE_FPS = 8  # nothing is animating; this box runs 24/7 on a Zero 2
 PER_PAGE = 4  # archive rows per page
 
 
@@ -63,12 +64,15 @@ class JBoxApp:
             os.environ["SDL_VIDEODRIVER"] = "dummy"
             pygame.init()
             self.display = None
-            self.fb = FbDisplay()
-            self.surface = pygame.Surface((self.fb.width, self.fb.height))
-            self.cfg.width, self.cfg.height = self.fb.width, self.fb.height
+            self.fb = FbDisplay(rotate=cfg.rotate)
+            self.surface = pygame.Surface((self.fb.canvas_w, self.fb.canvas_h))
+            self.cfg.width, self.cfg.height = self.fb.canvas_w, self.fb.canvas_h
+            log.info("panel %dx%d, canvas %dx%d, rotate=%d",
+                     self.fb.width, self.fb.height, self.fb.canvas_w, self.fb.canvas_h, cfg.rotate)
+            # evdev reports in panel space; rotate it into canvas space
             self.touch = EvdevTouch(
                 self.fb.width, self.fb.height,
-                on_tap=lambda pos: self.events.put(("tap", pos)),
+                on_tap=lambda pos: self.events.put(("tap", self.fb.panel_to_canvas(*pos))),
                 swap_xy=cfg.touch_swap_xy,
                 invert_x=cfg.touch_invert_x,
                 invert_y=cfg.touch_invert_y,
@@ -406,7 +410,8 @@ class JBoxApp:
                 else:
                     self.display.blit(self.surface, (0, 0))
                 pygame.display.flip()
-            clock.tick(FPS)
+            animating = self.state == "REVEAL" or time.monotonic() < self.heart_anim_until
+            clock.tick(FPS if animating else IDLE_FPS)
 
         self.led.off()
         self.screen_power.on()
