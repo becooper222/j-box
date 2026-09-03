@@ -26,6 +26,13 @@ display:
   fullscreen: true
   # Seconds per character during the typewriter reveal
   typewriter_delay: 0.045
+  # Handwriting face for the notes. fonts/PatrickHand-Regular.ttf is a
+  # more casual print alternative; both ship in pi/fonts/.
+  font: fonts/Caveat-Variable.ttf
+  # How long "Good morning, Julia" holds before the note types out
+  greeting_seconds: 2.0
+  # Pixels per second a note too long for one screen drifts upward
+  scroll_speed: 16.0
 
 gpio:
   # BCM numbering. The LCD covers physical pins 1-26: it uses 7,9,10,11 (touch

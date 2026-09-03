@@ -35,6 +35,14 @@ class Led:
         else:
             log.info("[mock LED] pulsing")
 
+    def heart_flash(self) -> None:
+        """Two quick warm beats confirming the heart was sent."""
+        self._pulsing = False
+        if self._led:
+            self._led.pulse(fade_in_time=0.12, fade_out_time=0.45, n=2, background=True)
+        else:
+            log.info("[mock LED] heart flash")
+
     def off(self) -> None:
         self._pulsing = False
         if self._led:

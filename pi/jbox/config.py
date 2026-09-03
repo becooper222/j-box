@@ -34,6 +34,9 @@ class Config:
     touch_invert_y: bool = False
     rotate: int = 90  # applied when the panel's native mode is portrait
     typewriter_delay: float = 0.045
+    font: str = "fonts/Caveat-Variable.ttf"
+    greeting_seconds: float = 2.0
+    scroll_speed: float = 16.0  # pixels per second for long notes
     led_pin: int = 12
     reed_pin: int = 26
     button_pin: int = 16
@@ -96,6 +99,9 @@ def load(path: str | Path) -> Config:
         touch_invert_y=bool(disp.get("touch_invert_y", False)),
         rotate=int(disp.get("rotate", 90)),
         typewriter_delay=float(disp.get("typewriter_delay", 0.045)),
+        font=str(disp.get("font", "fonts/Caveat-Variable.ttf")),
+        greeting_seconds=float(disp.get("greeting_seconds", 2.0)),
+        scroll_speed=float(disp.get("scroll_speed", 16.0)),
         led_pin=int(gpio.get("led_pin", 12)),
         reed_pin=int(gpio.get("reed_pin", 26)),
         button_pin=int(gpio.get("button_pin", 16)),

@@ -1,25 +1,27 @@
 """J-Box UI: a small state machine drawn with pygame.
 
 States:
-  IDLE     screen dark (box closed); LED pulses if a note is unread
-  REVEAL   lid opened on an unread note -> typewriter reveal
-  READING  a note on screen; the button hearts it
-  ARCHIVE  one older note at a time, walked back with the button
+  IDLE      screen dark (lid closed); LED pulses if a note is unread
+  GREETING  a time-aware hello, held briefly before the note
+  REVEAL    the note types itself out
+  READING   the note, with its date and heart status; long notes scroll
+  ARCHIVE   her hearted favorites, one at a time
 
-Input is one momentary button: a tap sends the heart, a hold browses the
-archive. Before it is soldered, `kill -USR1 <pid>` fakes a tap and
-`-USR2` a hold. Dev mode (no GPIO): 'o'/'c' work the lid, Esc quits.
+Input is one momentary button: a tap sends the heart (or advances when
+more unread notes are waiting), a hold browses favorites. Before it is
+soldered, `kill -USR1 <pid>` fakes a tap and `-USR2` a hold. Dev mode
+(no GPIO): 'o'/'c' work the lid, 'h'/'a' the button, Esc quits.
 """
 from __future__ import annotations
 
 import logging
-import math
 import os
 import queue
 import signal
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 import pygame
 
@@ -39,12 +41,16 @@ DIM = (138, 122, 114)
 FPS = 30
 IDLE_FPS = 8  # nothing is animating; this box runs 24/7 on a Zero 2
 
+SCROLL_PAUSE = 3.0     # seconds to read the top before a long note moves
+HINT_FADE_AFTER = 8.0  # the nudge retires once she has had a chance to see it
+SENT_LABEL_FOR = 4.0   # how long "sent" lingers next to the filled heart
+
 
 class JBoxApp:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.api = JBoxAPI(cfg.base_url, cfg.device_token)
-        self.events: queue.Queue[str] = queue.Queue()
+        self.events: queue.Queue = queue.Queue()
 
         self.led = Led(cfg.led_pin)
         self.screen_power = ScreenPower(blank_hdmi=cfg.blank_hdmi)
@@ -65,8 +71,8 @@ class JBoxApp:
         self.touch = None
         self.rotate = 0
         if cfg.driver == "fb":
-            # draw offscreen, copy pixels straight to /dev/fb0, and take
-            # taps from evdev (SDL's kmsdrm path is a no-show on this panel)
+            # draw offscreen and copy pixels straight to /dev/fb0 (SDL's
+            # kmsdrm output never reaches this panel)
             from .fbdisplay import FbDisplay
             from .touch import EvdevTouch
             os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -77,7 +83,6 @@ class JBoxApp:
             self.cfg.width, self.cfg.height = self.fb.canvas_w, self.fb.canvas_h
             log.info("panel %dx%d, canvas %dx%d, rotate=%d",
                      self.fb.width, self.fb.height, self.fb.canvas_w, self.fb.canvas_h, cfg.rotate)
-            # evdev reports in panel space; rotate it into canvas space
             self.touch = EvdevTouch(
                 self.fb.width, self.fb.height,
                 on_tap=lambda pos: self.events.put(("tap", self.fb.panel_to_canvas(*pos))),
@@ -93,27 +98,48 @@ class JBoxApp:
                 self.display = pygame.display.set_mode((cfg.width, cfg.height))
             dw, dh = self.display.get_size()
             if (dw, dh) != (cfg.width, cfg.height):
-                self.rotate = cfg.rotate  # 90 = panel is portrait-native
+                self.rotate = cfg.rotate
             self.surface = pygame.Surface((cfg.width, cfg.height))
             pygame.display.set_caption("J-Box")
             pygame.mouse.set_visible(False)
 
-        self.font_body = pygame.font.SysFont("dejavusans", 38)
-        self.font_head = pygame.font.SysFont("dejavusans", 24)
-        self.font_small = pygame.font.SysFont("dejavusans", 22)
+        self._load_fonts(cfg.font)
 
         self.state = "IDLE"
         self.current: Message | None = None
+        self.greeting_started = 0.0
         self.reveal_started = 0.0
-        self.heart_anim_until = 0.0
+        self.reading_started = 0.0
+        self.heart_sent_at = 0.0
+        self.opened_with_unread = False
         self.archive_index = 0
-        self.buttons: dict[str, pygame.Rect] = {}
 
         # before the button is soldered: kill -USR1 <pid> = tap, -USR2 = hold
         signal.signal(signal.SIGUSR1, lambda *_: self.events.put("btn_short"))
         signal.signal(signal.SIGUSR2, lambda *_: self.events.put("btn_long"))
 
         threading.Thread(target=self._poll_loop, daemon=True).start()
+
+    # ------------------------------------------------------------- setup
+
+    def _load_fonts(self, font_setting: str) -> None:
+        """Handwriting face, with a legible fallback if the file is missing."""
+        path = Path(font_setting)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent.parent / path
+        if path.exists():
+            # Caveat has a small x-height, so these run larger than a sans would
+            self.font_greet = pygame.font.Font(str(path), 76)
+            self.font_note = pygame.font.Font(str(path), 52)
+            self.font_head = pygame.font.Font(str(path), 34)
+            self.font_small = pygame.font.Font(str(path), 30)
+            log.info("handwriting font: %s", path.name)
+        else:
+            log.warning("font %s not found - falling back to DejaVu", path)
+            self.font_greet = pygame.font.SysFont("dejavusans", 52)
+            self.font_note = pygame.font.SysFont("dejavusans", 38)
+            self.font_head = pygame.font.SysFont("dejavusans", 24)
+            self.font_small = pygame.font.SysFont("dejavusans", 22)
 
     # ------------------------------------------------------------- polling
 
@@ -140,30 +166,46 @@ class JBoxApp:
             lines.append(line)
         return lines
 
-    def _draw_heart(self, center: tuple[int, int], size: int, color, filled=True) -> pygame.Rect:
+    def _draw_heart(self, center: tuple[int, int], size: int, color, filled: bool = True) -> None:
         x, y = center
-        r = size // 4
-        pts = [(x - 2 * r, y - r // 2), (x + 2 * r, y - r // 2), (x, y + int(1.6 * r))]
-        pygame.draw.polygon(self.surface, color, pts)
-        pygame.draw.circle(self.surface, color, (x - r, y - r // 2), r)
-        pygame.draw.circle(self.surface, color, (x + r, y - r // 2), r)
-        if not filled:
-            inner = tuple(max(0, c - 0) for c in BG)
-            pygame.draw.polygon(self.surface, inner, [(p[0], p[1]) for p in
-                [(x - 2 * r + 6, y - r // 2), (x + 2 * r - 6, y - r // 2), (x, y + int(1.6 * r) - 8)]])
-            pygame.draw.circle(self.surface, inner, (x - r, y - r // 2), r - 4)
-            pygame.draw.circle(self.surface, inner, (x + r, y - r // 2), r - 4)
-        return pygame.Rect(x - 2 * r - 10, y - 2 * r - 10, 4 * r + 20, 4 * r + 20)
+        r = max(3, size // 4)
 
-    def _header_text(self) -> tuple[str, tuple[int, int, int]]:
-        today = date.today()
-        occ = self.cfg.occasion_today(today)
+        def shape(scale: float, col):
+            rr = max(1, int(r * scale))
+            pts = [(x - 2 * rr, y - rr // 2), (x + 2 * rr, y - rr // 2), (x, y + int(1.6 * rr))]
+            pygame.draw.polygon(self.surface, col, pts)
+            pygame.draw.circle(self.surface, col, (x - rr, y - rr // 2), rr)
+            pygame.draw.circle(self.surface, col, (x + rr, y - rr // 2), rr)
+
+        shape(1.0, color)
+        if not filled:
+            shape(0.72, BG)  # hollow it out to leave an outline
+
+    def _greeting_text(self) -> tuple[str, tuple[int, int, int]]:
+        """Occasions take precedence; otherwise greet by time of day."""
+        occ = self.cfg.occasion_today(date.today())
         if occ:
             return occ.label, GOLD
-        days = self.cfg.days_together(today)
-        if days:
-            return f"Day {days:,} of us", ROSE
-        return "For Julia", ROSE
+        hour = datetime.now().hour
+        if 5 <= hour < 12:
+            part = "Good morning"
+        elif 12 <= hour < 17:
+            part = "Good afternoon"
+        elif 17 <= hour < 21:
+            part = "Good evening"
+        else:
+            part = "Good night"
+        return f"{part}, Julia", ROSE
+
+    def _unread_oldest_first(self) -> list[Message]:
+        return list(reversed(self.api.unread()))  # the api hands back newest first
+
+    def _favorites(self) -> list[Message]:
+        return [m for m in self.api.snapshot() if m.hearted_at]
+
+    def _note_area(self) -> tuple[int, int, int]:
+        """Left margin, first baseline, and usable height for note text."""
+        return 48, 74, self.cfg.height - 74 - 58
 
     # ------------------------------------------------------------- states
 
@@ -178,205 +220,231 @@ class JBoxApp:
 
     def _open_lid(self) -> None:
         self.screen_power.on()
-        unread = self.api.unread()
+        unread = self._unread_oldest_first()
+        self.opened_with_unread = bool(unread)
         if unread:
-            self.current = unread[-1]  # oldest unread first
-            self.state = "REVEAL"
-            self.reveal_started = time.monotonic()
+            self.current = unread[0]  # oldest first, so nothing is skipped
+            self.state = "GREETING"
+            self.greeting_started = time.monotonic()
         else:
             msgs = self.api.snapshot()
             self.current = msgs[0] if msgs else None
-            self.state = "READING"
+            self._enter_reading()
+
+    def _start_reveal(self) -> None:
+        self.state = "REVEAL"
+        self.reveal_started = time.monotonic()
+
+    def _enter_reading(self) -> None:
+        self.state = "READING"
+        self.reading_started = time.monotonic()
 
     def _finish_reveal(self) -> None:
         if self.current:
             self.api.mark_read(self.current.id)
         if not self.api.unread():
             self.led.off()
-        self.state = "READING"
+        self._enter_reading()
+
+    def _next_unread(self) -> None:
+        """More notes were waiting; reveal the next without another greeting."""
+        remaining = self._unread_oldest_first()
+        if remaining:
+            self.current = remaining[0]
+            self._start_reveal()
 
     # ------------------------------------------------------------- drawing
 
     def _draw_idle(self) -> None:
         self.surface.fill((0, 0, 0))
 
-    def _draw_note_chrome(self) -> None:
-        header, color = self._header_text()
-        if self.current and self.current.occasion:
-            color = GOLD
-        head = self.font_head.render(header, True, color)
-        self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 18))
+    def _draw_greeting(self) -> None:
+        self.surface.fill(BG)
+        text, color = self._greeting_text()
+        img = self.font_greet.render(text, True, color)
+        self.surface.blit(img, (self.cfg.width // 2 - img.get_width() // 2,
+                                self.cfg.height // 2 - img.get_height() // 2))
+        self._draw_heart((self.cfg.width // 2, self.cfg.height // 2 + img.get_height()), 34, ROSE)
+
+        if time.monotonic() - self.greeting_started >= self.cfg.greeting_seconds:
+            self._start_reveal()
 
     def _draw_reveal(self) -> None:
         self.surface.fill(BG)
-        self._draw_note_chrome()
-        assert self.current
-        lines = self._wrap(self.current.body, self.font_body, self.cfg.width - 90)
+        if not self.current:
+            self._enter_reading()
+            return
+        left, top, _ = self._note_area()
+        lines = self._wrap(self.current.body, self.font_note, self.cfg.width - 2 * left)
         elapsed = time.monotonic() - self.reveal_started
         visible = int(elapsed / self.cfg.typewriter_delay)
         total = sum(len(l) for l in lines)
 
-        y = 80
+        y = top
         shown = 0
         for line in lines:
             take = max(0, min(len(line), visible - shown))
             if take:
-                text = self.font_body.render(line[:take], True, CREAM)
-                self.surface.blit(text, (45, y))
+                self.surface.blit(self.font_note.render(line[:take], True, CREAM), (left, y))
             shown += len(line)
-            y += self.font_body.get_linesize() + 4
+            y += self.font_note.get_linesize()
 
-        # blinking caret while typing
         if visible < total and int(elapsed * 2) % 2 == 0:
-            pygame.draw.rect(self.surface, ROSE, (45 + 4, y - 8, 3, 26))
+            pygame.draw.rect(self.surface, ROSE, (left + 2, y - 6, 3, 26))
 
-        if visible >= total + 8:  # small pause after the last character
+        if visible >= total + 8:  # a beat after the last character lands
             self._finish_reveal()
 
     def _draw_reading(self) -> None:
         self.surface.fill(BG)
-        self.buttons.clear()
-        self._draw_note_chrome()
+        left, top, avail_h = self._note_area()
 
         if not self.current:
-            empty = self.font_body.render("No notes yet ♥", True, DIM)
-            self.surface.blit(empty, (self.cfg.width // 2 - empty.get_width() // 2, 200))
-        else:
-            lines = self._wrap(self.current.body, self.font_body, self.cfg.width - 90)
-            y = 80
-            for line in lines[:7]:
-                self.surface.blit(self.font_body.render(line, True, CREAM), (45, y))
-                y += self.font_body.get_linesize() + 4
-            stamp = self.font_small.render(self.current.created_date_text(), True, DIM)
-            self.surface.blit(stamp, (45, self.cfg.height - 44))
-
-            hearted = self.current.hearted_at is not None
-            rect = self._draw_heart(
-                (self.cfg.width - 90, self.cfg.height - 60), 56,
-                ROSE if hearted else DIM, filled=hearted,
-            )
-            self.buttons["heart"] = rect
-
-        hint = "press to send love  ·  hold to look back"
-        label = self.font_small.render(hint, True, DIM)
-        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2, self.cfg.height - 38))
-
-        # floating hearts after she presses the heart
-        if time.monotonic() < self.heart_anim_until:
-            t = self.heart_anim_until - time.monotonic()
-            for i in range(6):
-                phase = (1.5 - t) + i * 0.4
-                hx = self.cfg.width - 90 + int(30 * math.sin(phase * 3 + i))
-                hy = self.cfg.height - 60 - int(phase * 130)
-                if hy > 40:
-                    self._draw_heart((hx, hy), 20 + (i % 3) * 8, ROSE)
-
-    def _draw_archive(self) -> None:
-        """One older note at a time - a single button can't drive a list."""
-        self.surface.fill(BG)
-        msgs = self.api.snapshot()
-        if not msgs:
+            msg = self.font_note.render("No notes yet", True, DIM)
+            self.surface.blit(msg, (self.cfg.width // 2 - msg.get_width() // 2,
+                                    self.cfg.height // 2 - msg.get_height() // 2))
             return
 
-        idx = self.archive_index % len(msgs)
-        m = msgs[idx]
-        head = self.font_head.render(f"{m.created_date_text()}   ({idx + 1} of {len(msgs)})", True, GOLD)
-        self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 18))
+        # the day counter greets her only when nothing new was waiting
+        if not self.opened_with_unread:
+            days = self.cfg.days_together(date.today())
+            if days:
+                head = self.font_head.render(f"Day {days:,} of us", True, ROSE)
+                self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 24))
 
-        lines = self._wrap(m.body, self.font_body, self.cfg.width - 90)
-        y = 80
-        for line in lines[:7]:
-            self.surface.blit(self.font_body.render(line, True, CREAM), (45, y))
-            y += self.font_body.get_linesize() + 4
+        lines = self._wrap(self.current.body, self.font_note, self.cfg.width - 2 * left)
+        line_h = self.font_note.get_linesize()
+        total_h = len(lines) * line_h
 
-        if m.hearted_at:
-            self._draw_heart((self.cfg.width - 70, self.cfg.height - 60), 44, ROSE)
+        # a long note drifts upward on its own after a beat to read the top
+        offset = 0
+        if total_h > avail_h:
+            moving = time.monotonic() - self.reading_started - SCROLL_PAUSE
+            offset = int(max(0.0, min(moving * self.cfg.scroll_speed, total_h - avail_h)))
 
-        hint = "press for the one before  ·  hold to come back"
-        label = self.font_small.render(hint, True, DIM)
-        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2, self.cfg.height - 38))
+        self.surface.set_clip(pygame.Rect(0, top, self.cfg.width, avail_h))
+        y = top - offset
+        for line in lines:
+            if -line_h < y - top < avail_h + line_h:
+                self.surface.blit(self.font_note.render(line, True, CREAM), (left, y))
+            y += line_h
+        self.surface.set_clip(None)
+
+        stamp = self.font_small.render(self.current.created_date_text(), True, DIM)
+        self.surface.blit(stamp, (left, self.cfg.height - 44))
+
+        hearted = self.current.hearted_at is not None
+        self._draw_heart((self.cfg.width - 62, self.cfg.height - 34), 40,
+                         ROSE if hearted else DIM, filled=hearted)
+        if hearted and time.monotonic() - self.heart_sent_at < SENT_LABEL_FOR:
+            sent = self.font_small.render("sent", True, ROSE)
+            self.surface.blit(sent, (self.cfg.width - 106 - sent.get_width(),
+                                     self.cfg.height - 48))
+
+        self._draw_hint()
+
+    def _draw_hint(self) -> None:
+        """The button means different things; say which, then get out of the way."""
+        waiting = len(self.api.unread())
+        if waiting:
+            text = f"{waiting} more new  ·  press for the next"
+        elif self.current and not self.current.hearted_at:
+            if time.monotonic() - self.reading_started > HINT_FADE_AFTER:
+                return
+            text = "press to send love  ·  hold for favorites"
+        else:
+            return
+        label = self.font_small.render(text, True, DIM)
+        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2,
+                                  self.cfg.height - 44))
+
+    def _draw_archive(self) -> None:
+        """Her hearted notes, one at a time - a memory jar, not a list."""
+        self.surface.fill(BG)
+        favs = self._favorites()
+        if not favs:
+            a = self.font_note.render("No favorites yet", True, DIM)
+            b = self.font_small.render("press the heart on a note you love", True, DIM)
+            self.surface.blit(a, (self.cfg.width // 2 - a.get_width() // 2, 160))
+            self.surface.blit(b, (self.cfg.width // 2 - b.get_width() // 2, 240))
+            hint = self.font_small.render("hold to come back", True, DIM)
+            self.surface.blit(hint, (self.cfg.width // 2 - hint.get_width() // 2,
+                                     self.cfg.height - 44))
+            return
+
+        idx = self.archive_index % len(favs)
+        m = favs[idx]
+        head = self.font_head.render(
+            f"{m.created_date_text()}   ·   {idx + 1} of {len(favs)}", True, GOLD)
+        self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 24))
+
+        left, top, avail_h = self._note_area()
+        lines = self._wrap(m.body, self.font_note, self.cfg.width - 2 * left)
+        line_h = self.font_note.get_linesize()
+        self.surface.set_clip(pygame.Rect(0, top, self.cfg.width, avail_h))
+        y = top
+        for line in lines:
+            if y - top < avail_h:
+                self.surface.blit(self.font_note.render(line, True, CREAM), (left, y))
+            y += line_h
+        self.surface.set_clip(None)
+
+        self._draw_heart((self.cfg.width - 62, self.cfg.height - 34), 40, ROSE)
+        hint = self.font_small.render("press for the one before  ·  hold to come back", True, DIM)
+        self.surface.blit(hint, (self.cfg.width // 2 - hint.get_width() // 2, self.cfg.height - 44))
 
     # ------------------------------------------------------------- input
-
-    def _to_canvas(self, pos: tuple[int, int]) -> tuple[int, int]:
-        """Map a display-space tap back onto the landscape canvas."""
-        dx, dy = pos
-        w, h = self.cfg.width, self.cfg.height
-        if self.rotate == 90:      # canvas rotated CCW onto the panel
-            return w - 1 - dy, dx
-        if self.rotate == -90:     # clockwise
-            return dy, h - 1 - dx
-        if self.rotate == 180:
-            return w - 1 - dx, h - 1 - dy
-        return dx, dy
 
     def _button_short(self) -> None:
         log.info("button tap (state=%s)", self.state)
         if self.state == "IDLE":
             self._open_lid()
+        elif self.state == "GREETING":
+            self._start_reveal()
         elif self.state == "REVEAL":
             self.reveal_started = -1e9  # skip to the end of the typewriter
         elif self.state == "READING":
-            if self.current and not self.current.hearted_at:
+            if self.api.unread():
+                self._next_unread()
+            elif self.current and not self.current.hearted_at:
                 self.api.mark_hearted(self.current.id)
-            self.heart_anim_until = time.monotonic() + 1.5
+                self.heart_sent_at = time.monotonic()
+                self.led.heart_flash()
         elif self.state == "ARCHIVE":
             self.archive_index += 1
 
     def _button_long(self) -> None:
         log.info("button hold (state=%s)", self.state)
         if self.state == "ARCHIVE":
-            self.state = "READING"
             msgs = self.api.snapshot()
             self.current = msgs[0] if msgs else None
-        elif self.state in ("READING", "REVEAL"):
+            self.opened_with_unread = False
+            self._enter_reading()
+        elif self.state in ("READING", "REVEAL", "GREETING"):
             self.archive_index = 0
             self.state = "ARCHIVE"
 
-    def _tap(self, pos: tuple[int, int]) -> None:
-        log.info("tap at %s (state=%s)", pos, self.state)
-        if self.state == "IDLE":
-            # tap-to-wake: harmless in normal use (lid closed = screen
-            # unreachable) and lets the box work even if the reed fails
-            self._open_lid()
-            return
-        if self.state == "REVEAL":
-            # tapping skips to the end of the typewriter
-            self.reveal_started = -1e9
-            return
-        for name, rect in self.buttons.items():
-            if not rect.collidepoint(pos):
-                continue
-            if name == "heart" and self.current:
-                if not self.current.hearted_at:
-                    self.api.mark_hearted(self.current.id)
-                self.heart_anim_until = time.monotonic() + 1.5
-            elif name == "archive":
-                self.archive_index = 0
-                self.state = "ARCHIVE"
-            elif name == "back":
-                self.state = "READING"
-            elif name == "next":
-                self.archive_index += 1
-            elif name.startswith("open:"):
-                msg_id = name.split(":", 1)[1]
-                for m in self.api.snapshot():
-                    if m.id == msg_id:
-                        self.current = m
-                        self.state = "READING"
-                        break
-            return
-
     # ------------------------------------------------------------- main
+
+    def _animating(self) -> bool:
+        if self.state in ("GREETING", "REVEAL"):
+            return True
+        if self.state == "READING" and self.current:
+            since = time.monotonic() - self.reading_started
+            if since < SCROLL_PAUSE + 40:  # a scroll may still be in progress
+                return True
+            if time.monotonic() - self.heart_sent_at < SENT_LABEL_FOR:
+                return True
+        return False
 
     def run(self) -> None:
         clock = pygame.time.Clock()
         if self.cfg.always_open or os.environ.get("JBOX_START_OPEN"):
-            # no lid sensor wired yet: come up awake and stay awake
             self.screen_power.on()
             self._open_lid()
         else:
             self._enter_idle()
+
         running = True
         while running:
             for ev in pygame.event.get():
@@ -389,12 +457,10 @@ class JBoxApp:
                         self.events.put("lid_open")
                     elif ev.key == pygame.K_c:
                         self.events.put("lid_close")
-                elif ev.type == pygame.MOUSEBUTTONDOWN:
-                    self._tap(self._to_canvas(ev.pos))
-                elif ev.type == pygame.FINGERDOWN:
-                    # kmsdrm delivers touch as normalized finger events
-                    dw, dh = self.display.get_size()
-                    self._tap(self._to_canvas((int(ev.x * dw), int(ev.y * dh))))
+                    elif ev.key == pygame.K_h:
+                        self.events.put("btn_short")
+                    elif ev.key == pygame.K_a:
+                        self.events.put("btn_long")
 
             try:
                 while True:
@@ -408,23 +474,23 @@ class JBoxApp:
                     elif hw == "btn_long":
                         self._button_long()
                     elif isinstance(hw, tuple) and hw[0] == "tap":
-                        self._tap(hw[1])
+                        self._button_short()
             except queue.Empty:
                 pass
 
-            # a note arriving while the box is closed starts the LED breathing
             if self.state == "IDLE":
                 if self.api.unread():
                     self.led.pulse()
                 self._draw_idle()
-            elif self.state == "READING" and self.cfg.always_open and self.api.unread():
-                # dev mode: nothing will ever re-open the lid, so reveal
-                # anything that arrives while we sit here
-                self._open_lid()
+            elif self.state == "GREETING":
+                self._draw_greeting()
             elif self.state == "REVEAL":
                 self._draw_reveal()
             elif self.state == "READING":
                 self._draw_reading()
+                # dev mode has no lid to reopen, so surface arrivals right away
+                if self.cfg.always_open and self.api.unread():
+                    self._next_unread()
             elif self.state == "ARCHIVE":
                 self._draw_archive()
 
@@ -436,8 +502,8 @@ class JBoxApp:
                 else:
                     self.display.blit(self.surface, (0, 0))
                 pygame.display.flip()
-            animating = self.state == "REVEAL" or time.monotonic() < self.heart_anim_until
-            clock.tick(FPS if animating else IDLE_FPS)
+
+            clock.tick(FPS if self._animating() else IDLE_FPS)
 
         self.led.off()
         self.screen_power.on()

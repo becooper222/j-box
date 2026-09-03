@@ -31,17 +31,24 @@ every note ever sent.
 ## The flow she experiences
 
 1. Box sits closed and dark. A note arrives → the LED starts a slow pulse.
-2. She opens the lid (reed switch) → screen wakes → the note reveals itself
-   typewriter-style, headed "Day 2,913 of us" (or a gold occasion banner).
-3. She taps the heart button — you get "Julia ♥'d this" on your page — or
-   holds it to walk back through every note ever sent. Closing the lid puts
-   everything back to sleep.
+2. She opens the lid (reed switch) → "Good morning, Julia ♥" holds for a
+   beat (a gold banner instead on birthdays and anniversaries) → the note
+   types itself out in handwriting. Notes too long for one screen drift
+   upward on their own.
+3. She presses the heart button — the heart fills in, "sent" appears, the
+   LED gives two warm beats, and your page shows "Julia ♥'d this". Holding
+   the button walks back through the notes she has hearted. Closing the lid
+   puts everything back to sleep.
+
+If several notes piled up while the box was closed, the oldest comes first
+and the button steps through the rest before it becomes the heart again.
 
 ## Repo layout
 
 ```
 pi/                  everything that runs on the Pi
   jbox/              the Python app (config, API client, hardware, UI)
+  fonts/             bundled handwriting faces (OFL)
   config.example.yaml
   jbox.service       systemd unit (auto-start, auto-restart)
   install.sh
