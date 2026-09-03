@@ -9,8 +9,16 @@ sudo apt-get update
 sudo apt-get install -y python3-pygame python3-gpiozero python3-requests python3-yaml \
   libegl1 libgles2 libgl1-mesa-dri libgbm1 python3-numpy python3-evdev
 
-# keep the login prompt's blinking cursor from drawing over the fb display
+# keep the console's login prompt and blinking cursor off the display
 sudo systemctl disable --now getty@tty1 2>/dev/null || true
+echo 0 | sudo tee /sys/class/graphics/fbcon/cursor_blink > /dev/null 2>&1 || true
+CMDLINE=/boot/firmware/cmdline.txt
+[ -f "$CMDLINE" ] || CMDLINE=/boot/cmdline.txt
+if [ -f "$CMDLINE" ] && ! grep -q vt.global_cursor_default "$CMDLINE"; then
+  sudo cp "$CMDLINE" "$CMDLINE.bak"
+  sudo sed -i '1s/$/ vt.global_cursor_default=0 consoleblank=0 logo.nologo/' "$CMDLINE"
+  echo "==> Disabled console cursor (takes effect next boot)"
+fi
 
 if [ ! -f config.yaml ]; then
   cp config.example.yaml config.yaml

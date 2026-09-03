@@ -207,6 +207,44 @@ class JBoxApp:
         """Left margin, first baseline, and usable height for note text."""
         return 48, 74, self.cfg.height - 74 - 58
 
+    def _draw_note_block(self, lines: list[str], color, offset: int = 0,
+                         reveal_chars: int | None = None) -> tuple[int, int] | None:
+        """Draw a note centered on the panel; returns the caret position.
+
+        Lines are centered on their *full* width even while typing, so the
+        text does not shuffle sideways as characters land. A block short
+        enough to fit is also centered vertically; a taller one starts at
+        the top and is scrolled by the caller via `offset`.
+        """
+        font = self.font_note
+        _, top, avail_h = self._note_area()
+        line_h = font.get_linesize()
+        total_h = len(lines) * line_h
+
+        y = top + max(0, (avail_h - total_h) // 2) - offset
+        shown = 0
+        caret = None
+
+        self.surface.set_clip(pygame.Rect(0, top, self.cfg.width, avail_h))
+        for line in lines:
+            x = (self.cfg.width - font.size(line)[0]) // 2
+            if reveal_chars is None:
+                text = line
+            else:
+                take = max(0, min(len(line), reveal_chars - shown))
+                text = line[:take]
+                shown += len(line)
+            if text and -line_h < y - top < avail_h + line_h:
+                img = font.render(text, True, color)
+                self.surface.blit(img, (x, y))
+                if reveal_chars is not None and len(text) < len(line):
+                    caret = (x + img.get_width() + 4, y)
+            elif text and reveal_chars is not None and len(text) < len(line):
+                caret = (x + 4, y)
+            y += line_h
+        self.surface.set_clip(None)
+        return caret
+
     # ------------------------------------------------------------- states
 
     def _enter_idle(self) -> None:
@@ -274,30 +312,22 @@ class JBoxApp:
         if not self.current:
             self._enter_reading()
             return
-        left, top, _ = self._note_area()
+        left, _, _ = self._note_area()
         lines = self._wrap(self.current.body, self.font_note, self.cfg.width - 2 * left)
         elapsed = time.monotonic() - self.reveal_started
         visible = int(elapsed / self.cfg.typewriter_delay)
         total = sum(len(l) for l in lines)
 
-        y = top
-        shown = 0
-        for line in lines:
-            take = max(0, min(len(line), visible - shown))
-            if take:
-                self.surface.blit(self.font_note.render(line[:take], True, CREAM), (left, y))
-            shown += len(line)
-            y += self.font_note.get_linesize()
-
-        if visible < total and int(elapsed * 2) % 2 == 0:
-            pygame.draw.rect(self.surface, ROSE, (left + 2, y - 6, 3, 26))
+        caret = self._draw_note_block(lines, CREAM, reveal_chars=visible)
+        if caret and int(elapsed * 2) % 2 == 0:
+            pygame.draw.rect(self.surface, ROSE, (caret[0], caret[1] + 8, 3, 30))
 
         if visible >= total + 8:  # a beat after the last character lands
             self._finish_reveal()
 
     def _draw_reading(self) -> None:
         self.surface.fill(BG)
-        left, top, avail_h = self._note_area()
+        left, _, avail_h = self._note_area()
 
         if not self.current:
             msg = self.font_note.render("No notes yet", True, DIM)
@@ -313,8 +343,7 @@ class JBoxApp:
                 self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 24))
 
         lines = self._wrap(self.current.body, self.font_note, self.cfg.width - 2 * left)
-        line_h = self.font_note.get_linesize()
-        total_h = len(lines) * line_h
+        total_h = len(lines) * self.font_note.get_linesize()
 
         # a long note drifts upward on its own after a beat to read the top
         offset = 0
@@ -322,13 +351,7 @@ class JBoxApp:
             moving = time.monotonic() - self.reading_started - SCROLL_PAUSE
             offset = int(max(0.0, min(moving * self.cfg.scroll_speed, total_h - avail_h)))
 
-        self.surface.set_clip(pygame.Rect(0, top, self.cfg.width, avail_h))
-        y = top - offset
-        for line in lines:
-            if -line_h < y - top < avail_h + line_h:
-                self.surface.blit(self.font_note.render(line, True, CREAM), (left, y))
-            y += line_h
-        self.surface.set_clip(None)
+        self._draw_note_block(lines, CREAM, offset=offset)
 
         stamp = self.font_small.render(self.current.created_date_text(), True, DIM)
         self.surface.blit(stamp, (left, self.cfg.height - 44))
@@ -378,16 +401,9 @@ class JBoxApp:
             f"{m.created_date_text()}   ·   {idx + 1} of {len(favs)}", True, GOLD)
         self.surface.blit(head, (self.cfg.width // 2 - head.get_width() // 2, 24))
 
-        left, top, avail_h = self._note_area()
-        lines = self._wrap(m.body, self.font_note, self.cfg.width - 2 * left)
-        line_h = self.font_note.get_linesize()
-        self.surface.set_clip(pygame.Rect(0, top, self.cfg.width, avail_h))
-        y = top
-        for line in lines:
-            if y - top < avail_h:
-                self.surface.blit(self.font_note.render(line, True, CREAM), (left, y))
-            y += line_h
-        self.surface.set_clip(None)
+        left, _, _ = self._note_area()
+        self._draw_note_block(
+            self._wrap(m.body, self.font_note, self.cfg.width - 2 * left), CREAM)
 
         self._draw_heart((self.cfg.width - 62, self.cfg.height - 34), 40, ROSE)
         hint = self.font_small.render("press for the one before  ·  hold to come back", True, DIM)
