@@ -195,10 +195,8 @@ class JBoxApp:
             part = "Good morning"
         elif 12 <= hour < 17:
             part = "Good afternoon"
-        elif 17 <= hour < 21:
-            part = "Good evening"
         else:
-            part = "Good night"
+            part = "Good evening"  # carries the late hours too; nothing says goodnight
         return f"{part}, Julia", ROSE
 
     def _unread_oldest_first(self) -> list[Message]:
