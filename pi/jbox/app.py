@@ -261,16 +261,22 @@ class JBoxApp:
             self.led.off()
 
     def _open_lid(self) -> None:
+        """Every opening starts with the greeting; only what follows differs."""
         self.screen_power.on()
         unread = self._unread_oldest_first()
         self.opened_with_unread = bool(unread)
         if unread:
             self.current = unread[0]  # oldest first, so nothing is skipped
-            self.state = "GREETING"
-            self.greeting_started = time.monotonic()
         else:
             msgs = self.api.snapshot()
             self.current = msgs[0] if msgs else None
+        self.state = "GREETING"
+        self.greeting_started = time.monotonic()
+
+    def _end_greeting(self) -> None:
+        if self.opened_with_unread:
+            self._start_reveal()
+        else:
             self._enter_reading()
 
     def _start_reveal(self) -> None:
@@ -301,15 +307,23 @@ class JBoxApp:
         self.surface.fill((0, 0, 0))
 
     def _draw_greeting(self) -> None:
+        """A note arriving gets a heart; a quiet day says so instead."""
         self.surface.fill(BG)
         text, color = self._greeting_text()
         img = self.font_greet.render(text, True, color)
-        self.surface.blit(img, (self.cfg.width // 2 - img.get_width() // 2,
-                                self.cfg.height // 2 - img.get_height() // 2))
-        self._draw_heart((self.cfg.width // 2, self.cfg.height // 2 + img.get_height()), 34, ROSE)
+        cx, cy = self.cfg.width // 2, self.cfg.height // 2
+        self.surface.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2 - 16))
+
+        below = cy + img.get_height() // 2 - 4
+        if self.opened_with_unread:
+            self._draw_heart((cx, below + 18), 34, ROSE)
+        else:
+            sub = "no new note yet" if self.current else "no notes yet"
+            line = self.font_small.render(sub, True, DIM)
+            self.surface.blit(line, (cx - line.get_width() // 2, below))
 
         if time.monotonic() - self.greeting_started >= self.cfg.greeting_seconds:
-            self._start_reveal()
+            self._end_greeting()
 
     def _draw_reveal(self) -> None:
         self.surface.fill(BG)
@@ -425,7 +439,7 @@ class JBoxApp:
         if self.state == "IDLE":
             self._open_lid()
         elif self.state == "GREETING":
-            self._start_reveal()
+            self._end_greeting()
         elif self.state == "REVEAL":
             self.reveal_started = -1e9  # skip to the end of the typewriter
         elif self.state == "READING":
