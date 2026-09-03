@@ -44,6 +44,8 @@ IDLE_FPS = 8  # nothing is animating; this box runs 24/7 on a Zero 2
 SCROLL_PAUSE = 3.0     # seconds to read the top before a long note moves
 HINT_FADE_AFTER = 8.0  # the nudge retires once she has had a chance to see it
 SENT_LABEL_FOR = 4.0   # how long "sent" lingers next to the filled heart
+FOOT_H = 100           # room at the foot for the date, heart and its label
+FOOT_PAD = 14          # keeps the footer clear of the bezel at the panel edge
 
 
 class JBoxApp:
@@ -133,6 +135,7 @@ class JBoxApp:
             self.font_note = pygame.font.Font(str(path), 52)
             self.font_head = pygame.font.Font(str(path), 34)
             self.font_small = pygame.font.Font(str(path), 30)
+            self.font_tiny = pygame.font.Font(str(path), 25)
             log.info("handwriting font: %s", path.name)
         else:
             log.warning("font %s not found - falling back to DejaVu", path)
@@ -140,6 +143,7 @@ class JBoxApp:
             self.font_note = pygame.font.SysFont("dejavusans", 38)
             self.font_head = pygame.font.SysFont("dejavusans", 24)
             self.font_small = pygame.font.SysFont("dejavusans", 22)
+            self.font_tiny = pygame.font.SysFont("dejavusans", 18)
 
     # ------------------------------------------------------------- polling
 
@@ -205,7 +209,7 @@ class JBoxApp:
 
     def _note_area(self) -> tuple[int, int, int]:
         """Left margin, first baseline, and usable height for note text."""
-        return 48, 74, self.cfg.height - 74 - 58
+        return 48, 74, self.cfg.height - 74 - FOOT_H
 
     def _draw_note_block(self, lines: list[str], color, offset: int = 0,
                          reveal_chars: int | None = None) -> tuple[int, int] | None:
@@ -353,33 +357,38 @@ class JBoxApp:
 
         self._draw_note_block(lines, CREAM, offset=offset)
 
+        label_y = self.cfg.height - FOOT_PAD - self.font_tiny.get_linesize()
         stamp = self.font_small.render(self.current.created_date_text(), True, DIM)
-        self.surface.blit(stamp, (left, self.cfg.height - 44))
+        self.surface.blit(stamp, (left, self.cfg.height - FOOT_PAD - stamp.get_height()))
 
+        # the heart doubles as the button's label: "press" sits under it
         hearted = self.current.hearted_at is not None
-        self._draw_heart((self.cfg.width - 62, self.cfg.height - 34), 40,
-                         ROSE if hearted else DIM, filled=hearted)
-        if hearted and time.monotonic() - self.heart_sent_at < SENT_LABEL_FOR:
-            sent = self.font_small.render("sent", True, ROSE)
-            self.surface.blit(sent, (self.cfg.width - 106 - sent.get_width(),
-                                     self.cfg.height - 48))
+        hx = self.cfg.width - 62
+        self._draw_heart((hx, label_y - 22), 40, ROSE if hearted else DIM, filled=hearted)
+        if hearted:
+            if time.monotonic() - self.heart_sent_at < SENT_LABEL_FOR:
+                self._center_tiny("sent", ROSE, hx, label_y)
+        elif not self.api.unread():
+            self._center_tiny("press", DIM, hx, label_y)
 
         self._draw_hint()
 
+    def _center_tiny(self, text: str, color, cx: int, y: int) -> None:
+        img = self.font_tiny.render(text, True, color)
+        self.surface.blit(img, (cx - img.get_width() // 2, y))
+
     def _draw_hint(self) -> None:
-        """The button means different things; say which, then get out of the way."""
+        """Only what she cannot infer: that a hold opens favorites, and that
+        more notes are queued. The heart's own "press" label covers the rest."""
         waiting = len(self.api.unread())
         if waiting:
-            text = f"{waiting} more new  ·  press for the next"
-        elif self.current and not self.current.hearted_at:
-            if time.monotonic() - self.reading_started > HINT_FADE_AFTER:
-                return
-            text = "press to send love  ·  hold for favorites"
+            text = f"{waiting} more  ·  press for the next"
+        elif self._favorites() and time.monotonic() - self.reading_started < HINT_FADE_AFTER:
+            text = "hold for favorites"
         else:
             return
-        label = self.font_small.render(text, True, DIM)
-        self.surface.blit(label, (self.cfg.width // 2 - label.get_width() // 2,
-                                  self.cfg.height - 44))
+        self._center_tiny(text, DIM, self.cfg.width // 2,
+                          self.cfg.height - FOOT_PAD - self.font_tiny.get_linesize())
 
     def _draw_archive(self) -> None:
         """Her hearted notes, one at a time - a memory jar, not a list."""
@@ -390,9 +399,8 @@ class JBoxApp:
             b = self.font_small.render("press the heart on a note you love", True, DIM)
             self.surface.blit(a, (self.cfg.width // 2 - a.get_width() // 2, 160))
             self.surface.blit(b, (self.cfg.width // 2 - b.get_width() // 2, 240))
-            hint = self.font_small.render("hold to come back", True, DIM)
-            self.surface.blit(hint, (self.cfg.width // 2 - hint.get_width() // 2,
-                                     self.cfg.height - 44))
+            self._center_tiny("hold to go back", DIM, self.cfg.width // 2,
+                              self.cfg.height - FOOT_PAD - self.font_tiny.get_linesize())
             return
 
         idx = self.archive_index % len(favs)
@@ -405,9 +413,10 @@ class JBoxApp:
         self._draw_note_block(
             self._wrap(m.body, self.font_note, self.cfg.width - 2 * left), CREAM)
 
-        self._draw_heart((self.cfg.width - 62, self.cfg.height - 34), 40, ROSE)
-        hint = self.font_small.render("press for the one before  ·  hold to come back", True, DIM)
-        self.surface.blit(hint, (self.cfg.width // 2 - hint.get_width() // 2, self.cfg.height - 44))
+        label_y = self.cfg.height - FOOT_PAD - self.font_tiny.get_linesize()
+        self._draw_heart((self.cfg.width - 62, label_y - 22), 40, ROSE)
+        self._center_tiny("press for the one before  ·  hold to go back",
+                          DIM, self.cfg.width // 2, label_y)
 
     # ------------------------------------------------------------- input
 
